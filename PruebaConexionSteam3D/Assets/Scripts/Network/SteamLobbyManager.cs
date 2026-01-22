@@ -1,8 +1,10 @@
 ﻿using FishNet.Managing;
 using FishNet.Transporting.FishySteamworks;
 using Steamworks;
-using UnityEngine;
 using TMPro;
+using UnityEngine;
+using static UnityEngine.UI.GridLayoutGroup;
+using static UnityEngine.UI.Image;
 
 public class SteamLobbyManager : MonoBehaviour
 {
@@ -37,6 +39,12 @@ public class SteamLobbyManager : MonoBehaviour
         {
             Debug.LogError("Steam no esta inicializado!");
             return;
+        }
+
+        // Suscribirse a eventos de conexión del servidor
+        if (_networkManager != null && _networkManager.ServerManager != null)
+        {
+            _networkManager.ServerManager.OnRemoteConnectionState += ServerManager_OnRemoteConnectionState;
         }
 
         Invoke("StartAsHost", 0.5f);
@@ -92,6 +100,7 @@ public class SteamLobbyManager : MonoBehaviour
     private Callback<LobbyChatUpdate_t> _lobbyChatUpdateCallback;
     private Callback<GameLobbyJoinRequested_t> _gameLobbyJoinRequestedCallback;
     private Callback<GameRichPresenceJoinRequested_t> _gameRichPresenceJoinRequestedCallback;
+    private Callback<LobbyDataUpdate_t> _lobbyDataUpdateCallback;
 
     private void OnEnable()
     {
@@ -100,6 +109,33 @@ public class SteamLobbyManager : MonoBehaviour
         _lobbyChatUpdateCallback = Callback<LobbyChatUpdate_t>.Create(OnLobbyChatUpdate);
         _gameLobbyJoinRequestedCallback = Callback<GameLobbyJoinRequested_t>.Create(OnGameLobbyJoinRequested);
         _gameRichPresenceJoinRequestedCallback = Callback<GameRichPresenceJoinRequested_t>.Create(OnGameRichPresenceJoinRequested);
+        _lobbyDataUpdateCallback = Callback<LobbyDataUpdate_t>.Create(OnLobbyDataUpdate);
+    }
+
+    private void OnDisable()
+    {
+        if (_networkManager != null && _networkManager.ServerManager != null)
+        {
+            _networkManager.ServerManager.OnRemoteConnectionState -= ServerManager_OnRemoteConnectionState;
+        }
+    }
+
+    private void ServerManager_OnRemoteConnectionState(FishNet.Connection.NetworkConnection conn, FishNet.Transporting.RemoteConnectionStateArgs args)
+    {
+        if (args.ConnectionState == FishNet.Transporting.RemoteConnectionState.Stopped)
+        {
+            Debug.Log("Cliente desconectado: " + conn.ClientId);
+
+            // Limpiar UI
+            if (playerNameText != null)
+            {
+                playerNameText.text = "Player: ---";
+            }
+
+            // Reiniciar todo el lobby
+            Debug.Log("Reiniciando lobby...");
+            ReiniciarLobby();
+        }
     }
 
     private void OnLobbyCreated(LobbyCreated_t callback)
@@ -251,5 +287,80 @@ public class SteamLobbyManager : MonoBehaviour
                 }
             }
         }
+    }
+
+    private void ReiniciarLobby()
+    {
+        // Cerrar sesiones P2P
+        SteamNetworking.CloseP2PChannelWithUser(new CSteamID(0), 0);
+
+        // Salir del lobby actual si existe
+        if (_lobbyId.m_SteamID != 0)
+        {
+            SteamMatchmaking.LeaveLobby(_lobbyId);
+            _lobbyId = CSteamID.Nil;
+        }
+
+        // Detener servidor
+        if (_networkManager.ServerManager.Started)
+        {
+            _networkManager.ServerManager.StopConnection(true);
+        }
+
+        // Detener cliente por si acaso
+        if (_networkManager.ClientManager.Started)
+        {
+            _networkManager.ClientManager.StopConnection();
+        }
+
+        // Limpiar UI
+        if (playerNameText != null)
+        {
+            playerNameText.text = "Player: ---";
+        }
+
+        // Esperar un poco y reiniciar como host
+        Invoke("StartAsHost", 1f);
+    }
+
+    private void OnLobbyDataUpdate(LobbyDataUpdate_t callback)
+    {
+        if (callback.m_ulSteamIDLobby != _lobbyId.m_SteamID)
+            return;
+
+        CSteamID newOwner = SteamMatchmaking.GetLobbyOwner(_lobbyId);
+
+        // Si ahora somos el owner y antes no lo eramos
+        if (newOwner == SteamUser.GetSteamID() && !_isHost)
+        {
+            Debug.Log("El host se desconecto. Convirtiendose en el nuevo host...");
+            ConvertirseEnHost();
+        }
+    }
+
+    private void ConvertirseEnHost()
+    {
+        // Detener cliente
+        if (_networkManager.ClientManager.Started)
+        {
+            _networkManager.ClientManager.StopConnection();
+        }
+
+        // Salir del lobby actual
+        if (_lobbyId.m_SteamID != 0)
+        {
+            SteamMatchmaking.LeaveLobby(_lobbyId);
+            _lobbyId = CSteamID.Nil;
+        }
+
+        // Limpiar UI
+        if (playerNameText != null)
+        {
+            playerNameText.text = "Player: ";
+        }
+
+        // Reiniciar como host
+        Debug.Log("Reiniciando como nuevo host...");
+        Invoke("StartAsHost", 0.5f);
     }
 }

@@ -56,13 +56,35 @@ namespace FishNet.Transporting.FishySteamworks
 
         private void OnP2PSessionRequest(P2PSessionRequest_t param)
         {
-            Debug.Log($"P2P Session request from {param.m_steamIDRemote}");
-            SteamNetworking.AcceptP2PSessionWithUser(param.m_steamIDRemote);
+            CSteamID senderId = param.m_steamIDRemote;
+            Debug.Log("P2P Session request from " + senderId);
+
+            int existingId = GetConnectionId(senderId);
+            if (existingId != -1)
+            {
+                Debug.Log("Conexion ya existe con ID " + existingId + ", ignorando request duplicado");
+                SteamNetworking.AcceptP2PSessionWithUser(senderId);
+                return;
+            }
+
+            SteamNetworking.AcceptP2PSessionWithUser(senderId);
+
+            int connectionId = _nextConnectionId++;
+            _connectedClients[connectionId] = senderId;
+
+            Debug.Log("Nueva conexion aceptada de " + senderId + " con ID " + connectionId);
+
+            RemoteConnectionStateArgs connArgs = new RemoteConnectionStateArgs(
+                RemoteConnectionState.Started,
+                connectionId,
+                Index
+            );
+            OnRemoteConnectionState?.Invoke(connArgs);
         }
 
         private void OnP2PSessionConnectFail(P2PSessionConnectFail_t param)
         {
-            Debug.LogError($"P2P connection failed with {param.m_steamIDRemote}: {param.m_eP2PSessionError}");
+            Debug.LogError("P2P connection failed with " + param.m_steamIDRemote + ": " + param.m_eP2PSessionError);
         }
 
         public override LocalConnectionState GetConnectionState(bool server)
@@ -129,22 +151,12 @@ namespace FishNet.Transporting.FishySteamworks
                 {
                     if (server)
                     {
-                        // Servidor recibe datos
                         int connectionId = GetConnectionId(senderId);
+
                         if (connectionId == -1)
                         {
-                            // Nueva conexión
-                            connectionId = _nextConnectionId++;
-                            _connectedClients[connectionId] = senderId;
-
-                            RemoteConnectionStateArgs connArgs = new RemoteConnectionStateArgs(
-                                RemoteConnectionState.Started,
-                                connectionId,
-                                Index
-                            );
-                            OnRemoteConnectionState?.Invoke(connArgs);
-
-                            Debug.Log($"Client {senderId} connected with ID {connectionId}");
+                            Debug.LogWarning("Paquete recibido de cliente no conectado: " + senderId);
+                            continue;
                         }
 
                         ServerReceivedDataArgs dataArgs = new ServerReceivedDataArgs(
@@ -157,7 +169,6 @@ namespace FishNet.Transporting.FishySteamworks
                     }
                     else
                     {
-                        // Cliente recibe datos
                         ClientReceivedDataArgs dataArgs = new ClientReceivedDataArgs(
                             new ArraySegment<byte>(buffer),
                             0,
@@ -199,19 +210,28 @@ namespace FishNet.Transporting.FishySteamworks
         public void ConnectToHost(CSteamID hostId)
         {
             _hostSteamID = hostId;
-            _clientStarted = true;
 
-            // Enviar primer paquete para iniciar conexión P2P
+            Debug.Log("Iniciando conexion P2P con host " + hostId);
+
             byte[] connectPacket = new byte[1] { 0 };
-            SteamNetworking.SendP2PPacket(hostId, connectPacket, 1, EP2PSend.k_EP2PSendReliable);
+            bool sent = SteamNetworking.SendP2PPacket(hostId, connectPacket, 1, EP2PSend.k_EP2PSendReliable);
 
-            ClientConnectionStateArgs args = new ClientConnectionStateArgs(
-                LocalConnectionState.Started,
-                Index
-            );
-            OnClientConnectionState?.Invoke(args);
+            if (sent)
+            {
+                Debug.Log("Paquete inicial enviado exitosamente");
 
-            Debug.Log($"Connecting to host {hostId}");
+                _clientStarted = true;
+
+                ClientConnectionStateArgs args = new ClientConnectionStateArgs(
+                    LocalConnectionState.Started,
+                    Index
+                );
+                OnClientConnectionState?.Invoke(args);
+            }
+            else
+            {
+                Debug.LogError("Error enviando paquete inicial de conexion");
+            }
         }
 
         public override bool StartConnection(bool server)
@@ -242,6 +262,7 @@ namespace FishNet.Transporting.FishySteamworks
                     SteamNetworking.CloseP2PSessionWithUser(client);
                 }
                 _connectedClients.Clear();
+                _nextConnectionId = 0;
             }
             else
             {
